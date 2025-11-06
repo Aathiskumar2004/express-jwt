@@ -10,7 +10,7 @@ dotenv.config();
 
 const app = express();
 
-app.set.apply("trust proxy")
+app.set("trust proxy")
 
 app.use(
   rateLimit({
