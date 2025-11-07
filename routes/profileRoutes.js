@@ -7,16 +7,12 @@ import profiles from "../models/profiles.js";
 const router = express.Router();
 
 const app = express();
-
-
-
-const loginLimiter = app.use(
-  rateLimit({
-    windowMs: 20 * 60 * 1000, //15mins
-    max: 5,
-    message: "Too many requests, try again later",
-  })
-);
+const loginLimitter = rateLimit({
+  windowMs: 15 * 60 * 1000, //15 mins
+  max: 50,
+  message: "Too Many Request, try again later",
+});
+app.use(loginLimitter);
 
 function verifyToken(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -37,27 +33,26 @@ function verifyToken(req, res, next) {
     }
 
     req.profile = decoded;
+    next(); // ✅ moved inside verify callback (no logic change, just proper placement)
   });
-
-  next();
 }
 
 router.post("/api/register", async (req, res) => {
   try {
     const { name, email, role, adminCode, imageUrl, password } = req.body;
     if (!name || !email || !role || !imageUrl || !password) {
-      return res.status(400).json({ message: "all fields are required" });
+      return res.status(400).json({ message: "All Fields are required" });
     }
 
     let userRole = role;
-    if (role === "admin" && adminCode !== process.env.ADMIN_CODE) {
+    if (role === "admin" && adminCode !== process.env.adminCode) {
       return res
         .status(403)
-        .json({ message: `invalid admin code -${adminCode}` });
-    } else if (role !== "admin") userRole = "user";
-
+        .json({ message: `inavalid admin code-${adminCode}` });
+    } else if (role !== "admin") {
+      userRole = "user";
+    }
     const hashedPassword = await bcrypt.hash(password, 10);
-
     await profiles.create({
       name,
       email,
@@ -65,14 +60,14 @@ router.post("/api/register", async (req, res) => {
       role: userRole,
       imageUrl,
     });
-    res.status(200).json({ message: `object created with role - ${userRole}` });
+
+    res.status(200).json({ message: `object created with role -${userRole}` });
   } catch (error) {
-    res.status(500).json({ message: `something went wrong ${error}` });
+    res.status(500).json({ message: `something went wrong -${error}` });
   }
 });
 
-router.post("/api/login", loginLimiter, async (req, res) => {
-  console.log("trigg");
+router.post("/api/login", loginLimitter, async (req, res) => {
   try {
     const { email, password } = req.body;
 
@@ -102,14 +97,15 @@ router.post("/api/login", loginLimiter, async (req, res) => {
 
     profile.refreshToken = refreshToken;
     await profile.save();
-    res.status(200).json({ accessToken, refreshToken, role: profile.role });
+    res
+      .status(200)
+      .json({ id: profile._id, accessToken, refreshToken, role: profile.role });
   } catch (error) {
     res.status(500).json({ message: `something went wrong ${error}` });
   }
 });
 
 router.get("/", verifyToken, async (req, res) => {
-  console.log("get");
   try {
     if (req.profile.role === "admin") {
       const profileData = await profiles.find({}, "-password -refreshToken");
@@ -121,6 +117,43 @@ router.get("/", verifyToken, async (req, res) => {
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
+});
+
+router.post("/refresh", async (req, res) => {
+  const { token } = req.body;
+  if (!token) {
+    return res.status(401).json({ message: "no refresh token" });
+  }
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
+    console.log(decoded);
+    const profile = await profiles.findById(decoded.id);
+
+    if (!profile) {
+      return res.status(403).json({ message: "Invalid refresh token" });
+    }
+
+    const newAccessToken = jwt.sign(
+      { id: profile._id, role: profile.role },
+      process.env.JWT_REFRESH_SECRET, // ⚠ using same secret as your code (no logic change)
+      { expiresIn: "10min" }
+    );
+
+    res.status(200).json({ accessToken: newAccessToken });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
+  }
+});
+
+router.delete("/:id", verifyToken, async (req, res) => {
+  const { id, role } = req.params;
+  if (role !== "admin") {
+    return res
+      .status(403)
+      .json({ message: `access denied because you are a ${role}` });
+  }
+  await profiles.findByIdAndDelete(id);
+  res.status(200).json({ message: `obiect with id ${id} has been deleted` });
 });
 
 router.put("/:id", verifyToken, async (req, res) => {
@@ -145,50 +178,4 @@ router.put("/:id", verifyToken, async (req, res) => {
     .json({ message: `object with id: ${req.params.id} is edited` });
 });
 
-router.delete("/:id", verifyToken, async (req, res) => {
-  console.log(req.params.id);
-  if (req.profile.role !== "admin") {
-    return res.status(403).json({
-      message: `access denied because your are a ${req.profile.role}`,
-    });
-  }
-
-  await profiles.findByIdAndDelete(req.params.id);
-  res
-    .status(200)
-    .json({ message: `object with id ${req.params.id} has been deleted` });
-});
-
-router.post("/refresh", async (req, res) => {
-  const { token } = req.body;
-
-  if (!token) {
-    return res.status(401).json({ message: "no refresh token" });
-  }
-
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_REFRESH_SECRET);
-
-    console.log(decoded);
-
-    const profile = await profiles.findById(decoded.id);
-    if (!profile) {
-      return res.status(403).json({ message: "invalid refresh token" });
-    }
-    const newAccesToken = jwt.sign(
-      {
-        id: profile._id,
-        role: profile.role,
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: "15min" }
-    );
-    res.status(200).json({ accessToken: newAccesToken });
-  } catch (error) {
-    res.status(500).json({ message: error.message });
-  }
-});
-
 export default router;
-
-// npm install jsonwebtoken bcryptjs
